@@ -138,6 +138,7 @@ static uint opt_slave_data;
 static uint my_end_arg;
 static char * opt_mysql_unix_port=0;
 static char *opt_bind_addr = NULL;
+static char *opt_init_sql = NULL;
 static int   first_error=0;
 static DYNAMIC_STRING extended_row;
 #include <sslopt-vars.h>
@@ -248,6 +249,9 @@ static struct my_option my_long_options[] =
   {"comments", 'i', "Write additional information.",
    &opt_comments, &opt_comments, 0, GET_BOOL, NO_ARG,
    1, 0, 0, 0, 0, 0},
+  {"init-sql", OPT_INIT_SQL,
+   "Execute sqls on connection, used to customize timeout and other session variables.",
+   (uchar**)&opt_init_sql, (uchar**)&opt_init_sql, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   {"compatible", OPT_COMPATIBLE,
    "Change the dump to be compatible with a given mode. By default tables "
    "are dumped in a format optimized for MySQL. Legal modes are: ansi, "
@@ -626,7 +630,7 @@ void check_io(FILE *file)
 
 static void print_version(void)
 {
-  printf("%s  Ver %s Distrib %s, for %s (%s)\n",my_progname,DUMP_VERSION,
+  printf("%s  Ver %s Distrib %s, for %s (%s), Customized Edition\n",my_progname,DUMP_VERSION,
          MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE);
 } /* print_version */
 
@@ -871,6 +875,11 @@ get_one_option(int optid, const struct my_option *opt MY_ATTRIBUTE((unused)),
     }
     if (my_hash_insert(&ignore_table, (uchar*)my_strdup(argument, MYF(0))))
       exit(EX_EOM);
+    break;
+  }
+  case (int) OPT_INIT_SQL:
+  {
+    opt_init_sql = argument;
     break;
   }
   case (int) OPT_COMPATIBLE:
@@ -3611,6 +3620,14 @@ static void dump_table(char *table, char *db)
       uint i;
       ulong *lengths= mysql_fetch_lengths(res);
       rownr++;
+
+      // For large tables
+      if (0 == rownr % 100000) {
+        fprintf(stderr, "%lu rows dumpped for %s\n",
+            rownr, result_table);
+      }
+
+
       if (!extended_insert && !opt_xml)
       {
         fputs(insert_pat.str,md_result_file);
@@ -5058,6 +5075,30 @@ static int purge_bin_logs_to(MYSQL *mysql_con, char* log_name)
 }
 
 
+/*
+ Must terminate with `;`
+ Example:
+ --init-sql="SET @@session.ob_query_timeout=86400000000;SET @@session.ob_trx_timeout=86400000000;"
+ */
+static int run_init_sql(MYSQL *mysql_con)
+{
+  char *sql = opt_init_sql;
+  while (1) {
+    char *end = strchr(sql, ';');
+    if (NULL == end) break;
+    if (mysql_query_with_error_report(mysql_con, 0, sql)) {
+      goto err;
+    }
+    // check if more stmt
+    sql = end + 1;
+  }
+  return 0;
+
+err:
+  return 1;
+}
+
+
 static int start_transaction(MYSQL *mysql_con)
 {
   verbose_msg("-- Starting transaction...\n");
@@ -5640,6 +5681,7 @@ static my_bool get_view_structure(char *table, char* db)
       if (table_res)
         mysql_free_result(table_res);
       dynstr_free(&ds_view);
+
       DB_error(mysql, "when trying to save the result of SHOW CREATE TABLE in ds_view.");
       DBUG_RETURN(1);
     }
@@ -5845,6 +5887,10 @@ int main(int argc, char **argv)
   {
     if (get_bin_log_name(mysql, bin_log_name, sizeof(bin_log_name)))
       goto err;
+  }
+
+  if (opt_init_sql && run_init_sql(mysql)) {
+    goto err;
   }
 
   if (opt_single_transaction && start_transaction(mysql))
