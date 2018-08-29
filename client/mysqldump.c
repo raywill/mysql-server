@@ -1562,9 +1562,11 @@ static int connect_to_db(char *host, char *user,char *passwd)
   mysql_options(&mysql_connection, MYSQL_OPT_CONNECT_ATTR_RESET, 0);
   mysql_options4(&mysql_connection, MYSQL_OPT_CONNECT_ATTR_ADD,
                  "program_name", "mysqldump");
+
+  ulong client_flag = CLIENT_MULTI_STATEMENTS;
   if (!(mysql= mysql_connect_ssl_check(&mysql_connection, host, user,
                                        passwd, NULL, opt_mysql_port,
-                                       opt_mysql_unix_port, 0,
+                                       opt_mysql_unix_port, client_flag,
                                        opt_ssl_required)))
   {
     DB_error(&mysql_connection, "when trying to connect");
